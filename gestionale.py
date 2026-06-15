@@ -58,7 +58,7 @@ def check_password():
         return True
 
 # -----------------------------------------
-# 3. CARICAMENTO DATI
+# 3. CARICAMENTO E PULIZIA DATI
 # -----------------------------------------
 @st.cache_data(ttl=3600)
 def load_data():
@@ -66,7 +66,14 @@ def load_data():
     try:
         df_ordini = pd.read_excel(file_path, sheet_name='Ordini', engine='openpyxl')
         df_prodotti = pd.read_excel(file_path, sheet_name='Prodotti Magazzino', engine='openpyxl')
+        
+        # Formattazione data
         df_ordini['Data ordine'] = pd.to_datetime(df_ordini['Data ordine'], errors='coerce')
+        
+        # PULIZIA FONDAMENTALE: Rimuove gli spazi vuoti accidentali scritti in Excel
+        if 'Stato ordine' in df_ordini.columns:
+            df_ordini['Stato ordine'] = df_ordini['Stato ordine'].astype(str).str.strip()
+            
         return df_ordini, df_prodotti
     except Exception as e:
         st.error(f"Errore nella lettura del file Excel: {e}")
@@ -235,7 +242,7 @@ if check_password():
     # -----------------------------------------
     with tab_cashflow:
         st.header("⚖️ Riconciliazione e Previsione Incassi")
-        st.write("Inserisci i movimenti reali del conto corrente per il periodo filtrato. Il sistema calcolerà il disallineamento e stimerà i fondi in transito in base allo Stato dell'Ordine.")
+        st.write("Inserisci i movimenti reali del conto corrente per il periodo filtrato.")
         
         col_in, col_out, col_results = st.columns([1, 1, 2])
         
@@ -258,7 +265,7 @@ if check_password():
             st.metric("Utile Teorico (Da Excel)", f"€ {utile_teorico_excel:,.2f}")
             
             if disallineamento < 0:
-                st.error(f"⚠️ Buco di Cassa: € {disallineamento:,.2f}")
+                st.error(f"⚠️ Buco di Cassa (Disallineamento): € {disallineamento:,.2f}")
             elif disallineamento > 0:
                 st.success(f"📈 Extra Cassa: + € {disallineamento:,.2f}")
             else:
@@ -266,38 +273,48 @@ if check_password():
         
         st.markdown("---")
         
-        # --- CALCOLO FONDI BLOCCATI BASATO SULLO STATO ORDINE ---
+        # --- CALCOLO FONDI BLOCCATI E TABELLA VERIFICA ---
         st.subheader("⏳ Stima dei Fondi in Transito (Soldi Ostaggio)")
         
         if 'Stato ordine' in df_filtrato.columns and not df_filtrato.empty:
-            # Trova tutti gli stati possibili presenti nel file
             stati_disponibili = df_filtrato['Stato ordine'].dropna().unique().tolist()
+            stati_non_pagati_default = [s for s in stati_disponibili if str(s).strip().lower() != 'pagato' and str(s).strip().lower() != 'nan']
             
-            # Di default, seleziona tutto ciò che NON è "Pagato"
-            stati_non_pagati_default = [s for s in stati_disponibili if str(s).strip().lower() != 'pagato']
-            
-            # L'utente può scegliere dal menu a tendina quali stati considerare "in sospeso"
             stati_in_sospeso = st.multiselect(
                 "Quali stati indicano che i soldi devono ancora arrivare?",
                 options=stati_disponibili,
                 default=stati_non_pagati_default
             )
             
-            # Filtra gli ordini in base agli stati selezionati
             ordini_in_sospeso = df_filtrato[df_filtrato['Stato ordine'].isin(stati_in_sospeso)]
             
             if not ordini_in_sospeso.empty:
-                # Stima bonifico: Fatturato Lordo meno Fee
                 fondi_in_arrivo = ordini_in_sospeso['Fatturato (Lordo)'].sum() - ordini_in_sospeso['Fee (€)'].sum()
-                st.info(f"💶 Hai **{len(ordini_in_sospeso)} ordini** segnati come non pagati. Il valore netto atteso dai marketplace è di **€ {fondi_in_arrivo:,.2f}**.")
+                st.info(f"💶 Hai **{len(ordini_in_sospeso)} ordini** segnati come non incassati. Il valore netto atteso è di **€ {fondi_in_arrivo:,.2f}**.")
                 
-                # Riconciliazione finale
+                # Tabella per il controllo manuale (L'AUDIT)
+                with st.expander("🧐 Clicca qui per vedere il dettaglio esatto degli ordini conteggiati"):
+                    df_verifica = ordini_in_sospeso[['Data ordine', 'Order ID (Codice Market)', 'Stato ordine', 'Fatturato (Lordo)', 'Fee (€)']].copy()
+                    df_verifica['Netto Calcolato'] = df_verifica['Fatturato (Lordo)'] - df_verifica['Fee (€)']
+                    
+                    # Formattazione per mostrare l'euro nella tabella
+                    st.dataframe(
+                        df_verifica.style.format({
+                            'Data ordine': lambda t: t.strftime('%d/%m/%Y') if pd.notnull(t) else '',
+                            'Fatturato (Lordo)': '€ {:.2f}', 
+                            'Fee (€)': '€ {:.2f}', 
+                            'Netto Calcolato': '€ {:.2f}'
+                        }), 
+                        hide_index=True, 
+                        use_container_width=True
+                    )
+                
                 if disallineamento < 0:
                     recupero = abs(disallineamento) - fondi_in_arrivo
                     if recupero <= 0:
                         st.success("✅ **Niente panico!** Il tuo disallineamento di cassa è interamente giustificato e coperto dagli ordini in sospeso.")
                     else:
-                        st.warning(f"⚠️ **Attenzione:** I soldi in arrivo coprono solo una parte del buco. Ci sono ancora **€ {recupero:,.2f}** mancanti (potrebbero essere investimenti in merce o altre spese fisse).")
+                        st.warning(f"⚠️ **Attenzione:** I soldi in arrivo coprono solo una parte del buco. Ci sono ancora **€ {recupero:,.2f}** mancanti.")
             else:
                 st.success("Tutti gli ordini nel periodo selezionato risultano incassati. Nessun fondo in sospeso!")
         else:
