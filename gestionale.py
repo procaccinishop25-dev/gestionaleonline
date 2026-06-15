@@ -74,7 +74,7 @@ def load_data():
         if 'Stato ordine' in df_ordini.columns:
             df_ordini['Stato ordine'] = df_ordini['Stato ordine'].astype(str).str.strip()
             
-        # 3. CORREZIONE DATI: Trasforma testi/vuoti in numeri puri (evita calcoli sballati)
+        # 3. Trasforma testi/vuoti in numeri puri per evitare errori di calcolo
         if 'Fatturato (Lordo)' in df_ordini.columns:
             df_ordini['Fatturato (Lordo)'] = pd.to_numeric(df_ordini['Fatturato (Lordo)'], errors='coerce').fillna(0.0)
             
@@ -129,7 +129,7 @@ if check_password():
             default=marketplaces
         )
         
-        # Applica i filtri alle date e ai mercati
+        # Applica i filtri
         if len(date_range) == 2:
             start_date, end_date = date_range
             start_date = pd.to_datetime(start_date)
@@ -161,13 +161,11 @@ if check_password():
     # -----------------------------------------
     with tab_action:
         st.header("📋 Priorità e Azioni Suggerite")
-        
         col1, col2 = st.columns(2)
         
         with col1:
             st.subheader("🚨 Allerta Riordini (Stock)")
             sotto_scorta = df_prodotti[df_prodotti['Stock (A magazzino)'] <= df_prodotti['Punto di riordino (Stock minimo da avere)']]
-            
             if not sotto_scorta.empty:
                 st.error(f"Attenzione: {len(sotto_scorta)} prodotti da ordinare!")
                 st.dataframe(sotto_scorta[['Prodotto (SKU o nome)', 'Stock (A magazzino)', 'Quantità da ordinare']], hide_index=True, use_container_width=True)
@@ -178,7 +176,6 @@ if check_password():
             st.subheader("⚖️ Allerta Margini (< 15%)")
             if not df_filtrato.empty:
                 margini = df_filtrato.groupby('Prodotto (SKU o nome)').agg({'Fatturato (Lordo)': 'sum', 'Utile ': 'sum'}).reset_index()
-                # Gestione divisione per zero in caso di mancate vendite
                 margini['Margine %'] = 0.0
                 mask_vendite = margini['Fatturato (Lordo)'] > 0
                 margini.loc[mask_vendite, 'Margine %'] = (margini.loc[mask_vendite, 'Utile '] / margini.loc[mask_vendite, 'Fatturato (Lordo)']) * 100
@@ -193,7 +190,6 @@ if check_password():
                 st.info("Nessun dato di vendita per i filtri selezionati.")
 
         st.markdown("---")
-        
         st.subheader("🔄 Allarme Resi (Impatto Economico)")
         df_ordini_resi = df_filtrato.copy()
         
@@ -204,9 +200,7 @@ if check_password():
             if not resi_effettuati.empty:
                 logistica_bruciata = resi_effettuati['Costo logistico'].sum()
                 utile_perso = resi_effettuati['Utile '].sum()
-                
-                st.warning(f"⚠️ Attenzione: I resi filtrati ti sono costati **€ {logistica_bruciata:,.2f}** di logistica a vuoto e hanno azzerato **€ {utile_perso:,.2f}** di utile.")
-                
+                st.warning(f"⚠️ I resi filtrati ti sono costati **€ {logistica_bruciata:,.2f}** di logistica a vuoto e hanno azzerato **€ {utile_perso:,.2f}** di utile.")
                 top_resi = resi_effettuati.groupby('Prodotto (SKU o nome)')['Quantità resi effettiva'].sum().reset_index()
                 st.dataframe(top_resi.sort_values(by='Quantità resi effettiva', ascending=False), hide_index=True, use_container_width=True)
             else:
@@ -217,7 +211,6 @@ if check_password():
     # -----------------------------------------
     with tab_ordini:
         st.header("📊 Andamento Economico e Marketplace")
-        
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Fatturato Lordo", f"€ {df_filtrato['Fatturato (Lordo)'].sum():,.2f}")
         c2.metric("Utile Netto", f"€ {df_filtrato['Utile '].sum():,.2f}")
@@ -225,15 +218,12 @@ if check_password():
         c4.metric("Costi Logistica", f"€ {df_filtrato['Costo logistico'].sum():,.2f}")
         
         st.markdown("---")
-        
         if not df_filtrato.empty:
             col_chart1, col_chart2 = st.columns(2)
-            
             with col_chart1:
                 st.subheader("Fatturato per Canale")
                 fig1 = px.bar(df_filtrato.groupby('Marketplace')['Fatturato (Lordo)'].sum().reset_index(), x='Marketplace', y='Fatturato (Lordo)', color='Marketplace', text_auto='.2s')
                 st.plotly_chart(fig1, use_container_width=True)
-                
             with col_chart2:
                 st.subheader("Incidenza Fee per Canale")
                 resa = df_filtrato.groupby('Marketplace').agg({'Fatturato (Lordo)': 'sum', 'Fee (€)': 'sum'}).reset_index()
@@ -253,25 +243,22 @@ if check_password():
         st.dataframe(df_prodotti[colonne_pulite], use_container_width=True, hide_index=True)
 
     # -----------------------------------------
-    # TAB 4: CASH FLOW E FONDI IN TRANSITO
+    # TAB 4: CASH FLOW (CON SOLO "NON PAGATO")
     # -----------------------------------------
     with tab_cashflow:
-        st.header("⚖️ Riconciliazione e Previsione Incassi")
-        st.write("Inserisci i movimenti reali del conto corrente per il periodo filtrato.")
+        st.header("⚖ shrink_results Riconciliazione e Valore da Incassare")
+        st.write("Filtra il periodo a sinistra, inserisci i dati reali della banca e vedi l'analisi mirata sui soli ordini in stato 'Non pagato'.")
         
         col_in, col_out, col_results = st.columns([1, 1, 2])
-        
         with col_in:
             st.subheader("Entrate Reali")
             incassi = st.number_input("💰 Bonifici ricevuti (€):", min_value=0.0, value=0.0, step=100.0)
-            
         with col_out:
             st.subheader("Uscite Reali")
-            uscite = st.number_input("💸 Pagamenti (fornitori, logistica, ads) (€):", min_value=0.0, value=0.0, step=100.0)
+            uscite = st.number_input("💸 Pagamenti (fornitori/ads) (€):", min_value=0.0, value=0.0, step=100.0)
             
         with col_results:
             st.subheader("Confronto Decisionale")
-            
             cash_flow_reale = incassi - uscite
             utile_teorico_excel = df_filtrato['Utile '].sum()
             disallineamento = cash_flow_reale - utile_teorico_excel
@@ -283,31 +270,37 @@ if check_password():
                 st.error(f"⚠️ Buco di Cassa (Disallineamento): € {disallineamento:,.2f}")
             elif disallineamento > 0:
                 st.success(f"📈 Extra Cassa: + € {disallineamento:,.2f}")
-            else:
-                st.info("I conti tornano perfettamente.")
         
         st.markdown("---")
-        
-        # --- CALCOLO FONDI BLOCCATI BASATO SU FATTURATO - FEE ---
-        st.subheader("⏳ Stima dei Fondi in Transito (Soldi Ostaggio)")
+        st.subheader("⏳ Calcolo Diretto Ordini 'Non pagati'")
         
         if 'Stato ordine' in df_filtrato.columns and not df_filtrato.empty:
-            stati_disponibili = df_filtrato['Stato ordine'].dropna().unique().tolist()
-            stati_non_pagati_default = [s for s in stati_disponibili if str(s).strip().lower() != 'pagato' and str(s).strip().lower() != 'nan']
             
-            stati_in_sospeso = st.multiselect(
-                "Quali stati indicano che i soldi devono ancora arrivare?",
-                options=stati_disponibili,
-                default=stati_non_pagati_default
-            )
+            # LOGICA RICHIESTA: Python isola solo ed esclusivamente le righe "Non pagato"
+            ordini_non_pagati = df_filtrato[df_filtrato['Stato ordine'].str.lower() == 'non pagato']
             
-            ordini_in_sospeso = df_filtrato[df_filtrato['Stato ordine'].isin(stati_in_sospeso)]
-            
-            if not ordini_in_sospeso.empty:
-                # Formula matematica corretta richiesta
-                fondi_in_arrivo = ordini_in_sospeso['Fatturato (Lordo)'].sum() - ordini_in_sospeso['Fee (€)'].sum()
-                st.info(f"💶 Hai **{len(ordini_in_sospeso)} ordini** segnati come non incassati. Il valore netto atteso è di **€ {fondi_in_arrivo:,.2f}**.")
+            if not ordini_non_pagati.empty:
+                # OPERAZIONE MATEMATICA: Somma di (Fatturato - Fee) riga per riga
+                valore_da_incassare = (ordini_non_pagati['Fatturato (Lordo)'] - ordini_non_pagati['Fee (€)']).sum()
                 
-                # Tabella per il controllo manuale (L'AUDIT)
-                with st.expander("🧐 Clicca qui per vedere il dettaglio esatto degli ordini conteggiati"):
-                    df_verifica = ordini_in_sospeso[['Data ordine', 'Order ID (Codice Market)', 'Stato ordine', 'Fatturato (Lordo)', 'Fee (€)']].copy()
+                st.info(f"💶 Nel periodo selezionato ci sono **{len(ordini_non_pagati)} ordini** contrassegnati come **Non pagato**. Il calcolo esatto [Fatturato (Lordo) - Fee (€)] restituisce il valore netto che devi ancora ricevere: **€ {valore_da_incassare:,.2f}**")
+                
+                # Tabella per il controllo matematico istantaneo riga per riga
+                with st.expander("🧐 Clicca qui per controllare la matematica di ogni singolo ordine non pagato"):
+                    df_verifica = ordini_non_pagati[['Data ordine', 'Order ID (Codice Market)', 'Fatturato (Lordo)', 'Fee (€)']].copy()
+                    df_verifica['Importo che devi incassare'] = df_verifica['Fatturato (Lordo)'] - df_verifica['Fee (€)']
+                    
+                    st.dataframe(
+                        df_verifica.style.format({
+                            'Data ordine': lambda t: t.strftime('%d/%m/%Y') if pd.notnull(t) else '',
+                            'Fatturato (Lordo)': '€ {:.2f}', 
+                            'Fee (€)': '€ {:.2f}', 
+                            'Importo che devi incassare': '€ {:.2f}'
+                        }), 
+                        hide_index=True, 
+                        use_container_width=True
+                    )
+            else:
+                st.success("✅ Ottimo! Zero ordini in stato 'Non pagato' nel periodo selezionato.")
+        else:
+            st.info("Colonna 'Stato ordine' mancante o nessun dato disponibile.")
