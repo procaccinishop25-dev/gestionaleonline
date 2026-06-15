@@ -83,7 +83,6 @@ if check_password():
     with st.sidebar:
         st.title("⚙️ Pannello di Controllo")
         
-        # Pulsante per forzare l'aggiornamento
         if st.button("🔄 Ricarica Dati", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
@@ -95,7 +94,6 @@ if check_password():
         min_date = df_ordini['Data ordine'].min()
         max_date = df_ordini['Data ordine'].max()
         
-        # Assicuriamoci che ci siano date valide
         if pd.notna(min_date) and pd.notna(max_date):
             date_range = st.date_input(
                 "Seleziona Periodo:",
@@ -149,18 +147,16 @@ if check_password():
         
         col1, col2 = st.columns(2)
         
-        # Blocco 1: Riordini Stock
         with col1:
             st.subheader("🚨 Allerta Riordini (Stock)")
             sotto_scorta = df_prodotti[df_prodotti['Stock (A magazzino)'] <= df_prodotti['Punto di riordino (Stock minimo da avere)']]
             
             if not sotto_scorta.empty:
-                st.error(f"Attenzione: {len(sotto_scorta)} prodotti da ordinare dal fornitore!")
+                st.error(f"Attenzione: {len(sotto_scorta)} prodotti da ordinare!")
                 st.dataframe(sotto_scorta[['Prodotto (SKU o nome)', 'Stock (A magazzino)', 'Quantità da ordinare']], hide_index=True, use_container_width=True)
             else:
                 st.success("✅ Tutte le scorte sono sopra il livello di guardia.")
                 
-        # Blocco 2: Analisi Margini
         with col2:
             st.subheader("⚖️ Allerta Margini (< 15%)")
             if not df_filtrato.empty:
@@ -178,11 +174,9 @@ if check_password():
 
         st.markdown("---")
         
-        # Blocco 3: Allarme Resi
         st.subheader("🔄 Allarme Resi (Impatto Economico)")
         df_ordini_resi = df_filtrato.copy()
         
-        # Se la colonna resi non c'è o ha nomi diversi, gestiamo l'errore elegantemente
         if 'Quantità resi effettiva' in df_ordini_resi.columns:
             df_ordini_resi['Quantità resi effettiva'] = df_ordini_resi['Quantità resi effettiva'].fillna(0)
             resi_effettuati = df_ordini_resi[df_ordini_resi['Quantità resi effettiva'] > 0]
@@ -194,12 +188,9 @@ if check_password():
                 st.warning(f"⚠️ Attenzione: I resi filtrati ti sono costati **€ {logistica_bruciata:,.2f}** di logistica a vuoto e hanno azzerato **€ {utile_perso:,.2f}** di utile.")
                 
                 top_resi = resi_effettuati.groupby('Prodotto (SKU o nome)')['Quantità resi effettiva'].sum().reset_index()
-                st.write("Prodotti con maggior numero di resi nei dati filtrati:")
                 st.dataframe(top_resi.sort_values(by='Quantità resi effettiva', ascending=False), hide_index=True, use_container_width=True)
             else:
                 st.success("✅ Nessun reso registrato nei dati filtrati.")
-        else:
-            st.info("Colonna resi non trovata. Controlla il nome sul file Excel.")
 
     # -----------------------------------------
     # TAB 2: ANALISI VENDITE E GRAFICI
@@ -244,7 +235,7 @@ if check_password():
     # -----------------------------------------
     with tab_cashflow:
         st.header("⚖️ Riconciliazione e Previsione Incassi")
-        st.write("Inserisci i movimenti reali del conto corrente per il periodo filtrato. Il sistema calcolerà il disallineamento e stimerà i fondi in transito.")
+        st.write("Inserisci i movimenti reali del conto corrente per il periodo filtrato. Il sistema calcolerà il disallineamento e stimerà i fondi in transito in base allo Stato dell'Ordine.")
         
         col_in, col_out, col_results = st.columns([1, 1, 2])
         
@@ -275,31 +266,39 @@ if check_password():
         
         st.markdown("---")
         
-        # --- CALCOLO FONDI BLOCCATI ---
+        # --- CALCOLO FONDI BLOCCATI BASATO SULLO STATO ORDINE ---
         st.subheader("⏳ Stima dei Fondi in Transito (Soldi Ostaggio)")
-        giorni_ritardo = st.slider("Giorni medi di ritardo pagamenti (es. Amazon/Temu):", min_value=7, max_value=45, value=20)
         
-        if not df_filtrato.empty:
-            max_data_filtrata = df_filtrato['Data ordine'].max()
+        if 'Stato ordine' in df_filtrato.columns and not df_filtrato.empty:
+            # Trova tutti gli stati possibili presenti nel file
+            stati_disponibili = df_filtrato['Stato ordine'].dropna().unique().tolist()
             
-            if pd.notna(max_data_filtrata):
-                data_limite = max_data_filtrata - pd.Timedelta(days=giorni_ritardo)
-                ordini_in_sospeso = df_filtrato[df_filtrato['Data ordine'] > data_limite]
+            # Di default, seleziona tutto ciò che NON è "Pagato"
+            stati_non_pagati_default = [s for s in stati_disponibili if str(s).strip().lower() != 'pagato']
+            
+            # L'utente può scegliere dal menu a tendina quali stati considerare "in sospeso"
+            stati_in_sospeso = st.multiselect(
+                "Quali stati indicano che i soldi devono ancora arrivare?",
+                options=stati_disponibili,
+                default=stati_non_pagati_default
+            )
+            
+            # Filtra gli ordini in base agli stati selezionati
+            ordini_in_sospeso = df_filtrato[df_filtrato['Stato ordine'].isin(stati_in_sospeso)]
+            
+            if not ordini_in_sospeso.empty:
+                # Stima bonifico: Fatturato Lordo meno Fee
+                fondi_in_arrivo = ordini_in_sospeso['Fatturato (Lordo)'].sum() - ordini_in_sospeso['Fee (€)'].sum()
+                st.info(f"💶 Hai **{len(ordini_in_sospeso)} ordini** segnati come non pagati. Il valore netto atteso dai marketplace è di **€ {fondi_in_arrivo:,.2f}**.")
                 
-                if not ordini_in_sospeso.empty:
-                    # Stima bonifico: Fatturato Lordo meno Fee
-                    fondi_in_arrivo = ordini_in_sospeso['Fatturato (Lordo)'].sum() - ordini_in_sospeso['Fee (€)'].sum()
-                    st.info(f"💶 In base alle vendite degli ultimi {giorni_ritardo} giorni, hai circa **€ {fondi_in_arrivo:,.2f}** in fase di elaborazione o bloccati dai marketplace.")
-                    
-                    if disallineamento < 0:
-                        recupero = abs(disallineamento) - fondi_in_arrivo
-                        if recupero <= 0:
-                            st.success("✅ **Niente panico!** Il tuo buco di cassa è interamente coperto dai soldi in arrivo nei prossimi giorni.")
-                        else:
-                            st.warning(f"⚠️ **Attenzione:** I soldi in arrivo coprono solo una parte del buco. Ci sono ancora **€ {recupero:,.2f}** mancanti all'appello (probabilmente spesi in merce ferma in magazzino o altre spese).")
-                else:
-                    st.write("Nessun ordine recente in sospeso in questo lasso di tempo.")
+                # Riconciliazione finale
+                if disallineamento < 0:
+                    recupero = abs(disallineamento) - fondi_in_arrivo
+                    if recupero <= 0:
+                        st.success("✅ **Niente panico!** Il tuo disallineamento di cassa è interamente giustificato e coperto dagli ordini in sospeso.")
+                    else:
+                        st.warning(f"⚠️ **Attenzione:** I soldi in arrivo coprono solo una parte del buco. Ci sono ancora **€ {recupero:,.2f}** mancanti (potrebbero essere investimenti in merce o altre spese fisse).")
             else:
-                 st.write("Nessuna data valida per calcolare i ritardi.")
+                st.success("Tutti gli ordini nel periodo selezionato risultano incassati. Nessun fondo in sospeso!")
         else:
-             st.write("Nessun dato disponibile con i filtri attuali.")
+            st.info("Nessun dato disponibile o colonna 'Stato ordine' mancante nel file Excel.")
