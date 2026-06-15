@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 
 # -----------------------------------------
-# 1. CONFIGURAZIONE PAGINA
+# 1. CONFIGURAZIONE PAGINA E STILE
 # -----------------------------------------
 st.set_page_config(
     page_title="CRM Decisionale 2026", 
@@ -58,12 +58,11 @@ def check_password():
         return True
 
 # -----------------------------------------
-# 3. CARICAMENTO DATI (DA GITHUB)
+# 3. CARICAMENTO DATI (DA GITHUB/LOCALE)
 # -----------------------------------------
-# Uso ttl=3600 (1 ora) ma la cache si resetta anche quando premi il pulsante o quando aggiorni GitHub
 @st.cache_data(ttl=3600)
 def load_data():
-    file_path = "Gestionale 2026.xlsx" # Legge il file caricato nel repository
+    file_path = "Gestionale 2026.xlsx" 
     try:
         df_ordini = pd.read_excel(file_path, sheet_name='Ordini', engine='openpyxl')
         df_prodotti = pd.read_excel(file_path, sheet_name='Prodotti Magazzino', engine='openpyxl')
@@ -73,7 +72,9 @@ def load_data():
         st.error(f"Errore nella lettura del file Excel: {e}")
         st.stop()
 
-# Esecuzione principale
+# =========================================
+# ESECUZIONE PRINCIPALE DELL'APP
+# =========================================
 if check_password():
     
     df_ordini, df_prodotti = load_data()
@@ -82,7 +83,7 @@ if check_password():
     with st.sidebar:
         st.title("⚙️ Pannello di Controllo")
         
-        # Pulsante utilissimo: se hai appena caricato il file su GitHub, premi qui per forzare l'aggiornamento
+        # Pulsante per forzare l'aggiornamento quando carichi il file su GitHub
         if st.button("🔄 Ricarica Dati", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
@@ -98,23 +99,27 @@ if check_password():
         )
         df_filtrato = df_ordini[df_ordini['Marketplace'].isin(mercati_selezionati)]
 
-    # --- DASHBOARD PRINCIPALE ---
+    # --- INTESTAZIONE DASHBOARD ---
     st.title("🚀 CRM Gestionale 2026")
     st.markdown("---")
 
-    # Creazione delle Schede (Tabs)
-    tab_action, tab_ordini, tab_magazzino = st.tabs([
+    # --- CREAZIONE DELLE 4 SCHEDE (TABS) ---
+    tab_action, tab_ordini, tab_magazzino, tab_cashflow = st.tabs([
         "🎯 Action Plan Oggi", 
         "📈 Analisi Vendite", 
-        "📦 Stato Magazzino"
+        "📦 Stato Magazzino",
+        "💼 Cash Flow & Resi"
     ])
 
-    # --- TAB 1: LOGICA DECISIONALE ---
+    # -----------------------------------------
+    # TAB 1: LOGICA DECISIONALE (AZIONI)
+    # -----------------------------------------
     with tab_action:
         st.header("📋 Priorità e Azioni Suggerite")
         
         col1, col2 = st.columns(2)
         
+        # Blocco 1: Riordini Stock
         with col1:
             st.subheader("🚨 Allerta Riordini (Stock)")
             sotto_scorta = df_prodotti[df_prodotti['Stock (A magazzino)'] <= df_prodotti['Punto di riordino (Stock minimo da avere)']]
@@ -125,6 +130,7 @@ if check_password():
             else:
                 st.success("✅ Tutte le scorte sono sopra il livello di guardia.")
                 
+        # Blocco 2: Analisi Margini
         with col2:
             st.subheader("⚖️ Allerta Margini (< 15%)")
             if not df_filtrato.empty:
@@ -140,7 +146,31 @@ if check_password():
             else:
                 st.info("Nessun dato di vendita per i filtri selezionati.")
 
-    # --- TAB 2: ANALISI VENDITE E GRAFICI ---
+        st.markdown("---")
+        
+        # Blocco 3: Allarme Resi
+        st.subheader("🔄 Allarme Resi (Impatto Economico)")
+        df_ordini_resi = df_filtrato.copy()
+        # Assicuriamoci che i vuoti nella colonna resi diventino 0 per calcolare correttamente
+        df_ordini_resi['Quantità resi effettiva'] = df_ordini_resi['Quantità resi effettiva'].fillna(0)
+        
+        resi_effettuati = df_ordini_resi[df_ordini_resi['Quantità resi effettiva'] > 0]
+        
+        if not resi_effettuati.empty:
+            logistica_bruciata = resi_effettuati['Costo logistico'].sum()
+            utile_perso = resi_effettuati['Utile '].sum()
+            
+            st.warning(f"⚠️ Attenzione: I resi ti sono costati **€ {logistica_bruciata:,.2f}** di logistica a vuoto e ti hanno azzerato **€ {utile_perso:,.2f}** di utile teorico.")
+            
+            top_resi = resi_effettuati.groupby('Prodotto (SKU o nome)')['Quantità resi effettiva'].sum().reset_index()
+            st.write("Prodotti con maggior numero di resi nei dati filtrati:")
+            st.dataframe(top_resi.sort_values(by='Quantità resi effettiva', ascending=False), hide_index=True, use_container_width=True)
+        else:
+            st.success("✅ Nessun reso registrato nei dati filtrati.")
+
+    # -----------------------------------------
+    # TAB 2: ANALISI VENDITE E GRAFICI
+    # -----------------------------------------
     with tab_ordini:
         st.header("📊 Andamento Economico e Marketplace")
         
@@ -168,8 +198,46 @@ if check_password():
                 fig2.update_layout(yaxis_title="Percentuale Fee (%)")
                 st.plotly_chart(fig2, use_container_width=True)
 
-    # --- TAB 3: MAGAZZINO COMPLETO ---
+    # -----------------------------------------
+    # TAB 3: MAGAZZINO COMPLETO
+    # -----------------------------------------
     with tab_magazzino:
         st.header("📦 Inventario e Dati Prodotti")
         colonne_pulite = [c for c in df_prodotti.columns if not str(c).startswith('Unnamed')]
         st.dataframe(df_prodotti[colonne_pulite], use_container_width=True, hide_index=True)
+
+    # -----------------------------------------
+    # TAB 4: CASH FLOW (RICONCILIAZIONE)
+    # -----------------------------------------
+    with tab_cashflow:
+        st.header("⚖️ Riconciliazione Bancaria")
+        st.write("Inserisci i movimenti reali del tuo conto corrente per capire dove si blocca la liquidità rispetto all'utile di Excel.")
+        
+        col_in, col_out, col_results = st.columns([1, 1, 2])
+        
+        with col_in:
+            st.subheader("Entrate Reali")
+            incassi = st.number_input("💰 Bonifici ricevuti (€):", min_value=0.0, value=0.0, step=100.0)
+            
+        with col_out:
+            st.subheader("Uscite Reali")
+            uscite = st.number_input("💸 Pagamenti fornitori/ads (€):", min_value=0.0, value=0.0, step=100.0)
+            
+        with col_results:
+            st.subheader("Confronto Decisionale")
+            
+            cash_flow_reale = incassi - uscite
+            utile_teorico_excel = df_filtrato['Utile '].sum()
+            disallineamento = cash_flow_reale - utile_teorico_excel
+            
+            st.metric("Flusso di Cassa Reale (In - Out)", f"€ {cash_flow_reale:,.2f}")
+            st.metric("Utile Teorico (Da Excel)", f"€ {utile_teorico_excel:,.2f}")
+            
+            if disallineamento < 0:
+                st.error(f"⚠️ Disallineamento: € {disallineamento:,.2f}")
+                st.write("**Diagnosi:** Hai generato utile, ma non hai ancora i soldi in cassa. Probabili cause: Amazon/Temu devono ancora accreditarti i fondi, oppure hai comprato troppo stock che è fermo in magazzino.")
+            elif disallineamento > 0:
+                st.success(f"📈 Disallineamento: + € {disallineamento:,.2f}")
+                st.write("**Diagnosi:** Hai più soldi in cassa rispetto all'utile teorico. Probabili cause: Stai vendendo stock vecchio già pagato in passato, oppure i marketplace ti hanno saldato le fatture del mese precedente.")
+            else:
+                st.info("I conti tornano perfettamente.")
