@@ -58,7 +58,7 @@ def check_password():
         return True
 
 # -----------------------------------------
-# 3. CARICAMENTO E PULIZIA DATI
+# 3. CARICAMENTO E BONIFICA DATI EXCEL
 # -----------------------------------------
 @st.cache_data(ttl=3600)
 def load_data():
@@ -67,12 +67,22 @@ def load_data():
         df_ordini = pd.read_excel(file_path, sheet_name='Ordini', engine='openpyxl')
         df_prodotti = pd.read_excel(file_path, sheet_name='Prodotti Magazzino', engine='openpyxl')
         
-        # Formattazione data
+        # 1. Formattazione data uniforme
         df_ordini['Data ordine'] = pd.to_datetime(df_ordini['Data ordine'], errors='coerce')
         
-        # PULIZIA FONDAMENTALE: Rimuove gli spazi vuoti accidentali scritti in Excel
+        # 2. Pulizia spazi invisibili nello stato dell'ordine
         if 'Stato ordine' in df_ordini.columns:
             df_ordini['Stato ordine'] = df_ordini['Stato ordine'].astype(str).str.strip()
+            
+        # 3. CORREZIONE DATI: Trasforma testi/vuoti in numeri puri (evita calcoli sballati)
+        if 'Fatturato (Lordo)' in df_ordini.columns:
+            df_ordini['Fatturato (Lordo)'] = pd.to_numeric(df_ordini['Fatturato (Lordo)'], errors='coerce').fillna(0.0)
+            
+        if 'Fee (€)' in df_ordini.columns:
+            df_ordini['Fee (€)'] = pd.to_numeric(df_ordini['Fee (€)'], errors='coerce').fillna(0.0)
+            
+        if 'Utile ' in df_ordini.columns:
+            df_ordini['Utile '] = pd.to_numeric(df_ordini['Utile '], errors='coerce').fillna(0.0)
             
         return df_ordini, df_prodotti
     except Exception as e:
@@ -119,7 +129,7 @@ if check_password():
             default=marketplaces
         )
         
-        # Applica i filtri
+        # Applica i filtri alle date e ai mercati
         if len(date_range) == 2:
             start_date, end_date = date_range
             start_date = pd.to_datetime(start_date)
@@ -168,7 +178,10 @@ if check_password():
             st.subheader("⚖️ Allerta Margini (< 15%)")
             if not df_filtrato.empty:
                 margini = df_filtrato.groupby('Prodotto (SKU o nome)').agg({'Fatturato (Lordo)': 'sum', 'Utile ': 'sum'}).reset_index()
-                margini['Margine %'] = (margini['Utile '] / margini['Fatturato (Lordo)']) * 100
+                # Gestione divisione per zero in caso di mancate vendite
+                margini['Margine %'] = 0.0
+                mask_vendite = margini['Fatturato (Lordo)'] > 0
+                margini.loc[mask_vendite, 'Margine %'] = (margini.loc[mask_vendite, 'Utile '] / margini.loc[mask_vendite, 'Fatturato (Lordo)']) * 100
                 
                 critici = margini[margini['Margine %'] < 15]
                 if not critici.empty:
@@ -185,7 +198,7 @@ if check_password():
         df_ordini_resi = df_filtrato.copy()
         
         if 'Quantità resi effettiva' in df_ordini_resi.columns:
-            df_ordini_resi['Quantità resi effettiva'] = df_ordini_resi['Quantità resi effettiva'].fillna(0)
+            df_ordini_resi['Quantità resi effettiva'] = pd.to_numeric(df_ordini_resi['Quantità resi effettiva'], errors='coerce').fillna(0)
             resi_effettuati = df_ordini_resi[df_ordini_resi['Quantità resi effettiva'] > 0]
             
             if not resi_effettuati.empty:
@@ -224,7 +237,9 @@ if check_password():
             with col_chart2:
                 st.subheader("Incidenza Fee per Canale")
                 resa = df_filtrato.groupby('Marketplace').agg({'Fatturato (Lordo)': 'sum', 'Fee (€)': 'sum'}).reset_index()
-                resa['% Fee'] = (resa['Fee (€)'] / resa['Fatturato (Lordo)']) * 100
+                resa['% Fee'] = 0.0
+                mask_fee = resa['Fatturato (Lordo)'] > 0
+                resa.loc[mask_fee, '% Fee'] = (resa.loc[mask_fee, 'Fee (€)'] / resa.loc[mask_fee, 'Fatturato (Lordo)']) * 100
                 fig2 = px.bar(resa, x='Marketplace', y='% Fee', color='Marketplace', text_auto='.1f')
                 fig2.update_layout(yaxis_title="Percentuale Fee (%)")
                 st.plotly_chart(fig2, use_container_width=True)
@@ -273,7 +288,7 @@ if check_password():
         
         st.markdown("---")
         
-        # --- CALCOLO FONDI BLOCCATI E TABELLA VERIFICA ---
+        # --- CALCOLO FONDI BLOCCATI BASATO SU FATTURATO - FEE ---
         st.subheader("⏳ Stima dei Fondi in Transito (Soldi Ostaggio)")
         
         if 'Stato ordine' in df_filtrato.columns and not df_filtrato.empty:
@@ -289,33 +304,10 @@ if check_password():
             ordini_in_sospeso = df_filtrato[df_filtrato['Stato ordine'].isin(stati_in_sospeso)]
             
             if not ordini_in_sospeso.empty:
+                # Formula matematica corretta richiesta
                 fondi_in_arrivo = ordini_in_sospeso['Fatturato (Lordo)'].sum() - ordini_in_sospeso['Fee (€)'].sum()
                 st.info(f"💶 Hai **{len(ordini_in_sospeso)} ordini** segnati come non incassati. Il valore netto atteso è di **€ {fondi_in_arrivo:,.2f}**.")
                 
                 # Tabella per il controllo manuale (L'AUDIT)
                 with st.expander("🧐 Clicca qui per vedere il dettaglio esatto degli ordini conteggiati"):
                     df_verifica = ordini_in_sospeso[['Data ordine', 'Order ID (Codice Market)', 'Stato ordine', 'Fatturato (Lordo)', 'Fee (€)']].copy()
-                    df_verifica['Netto Calcolato'] = df_verifica['Fatturato (Lordo)'] - df_verifica['Fee (€)']
-                    
-                    # Formattazione per mostrare l'euro nella tabella
-                    st.dataframe(
-                        df_verifica.style.format({
-                            'Data ordine': lambda t: t.strftime('%d/%m/%Y') if pd.notnull(t) else '',
-                            'Fatturato (Lordo)': '€ {:.2f}', 
-                            'Fee (€)': '€ {:.2f}', 
-                            'Netto Calcolato': '€ {:.2f}'
-                        }), 
-                        hide_index=True, 
-                        use_container_width=True
-                    )
-                
-                if disallineamento < 0:
-                    recupero = abs(disallineamento) - fondi_in_arrivo
-                    if recupero <= 0:
-                        st.success("✅ **Niente panico!** Il tuo disallineamento di cassa è interamente giustificato e coperto dagli ordini in sospeso.")
-                    else:
-                        st.warning(f"⚠️ **Attenzione:** I soldi in arrivo coprono solo una parte del buco. Ci sono ancora **€ {recupero:,.2f}** mancanti.")
-            else:
-                st.success("Tutti gli ordini nel periodo selezionato risultano incassati. Nessun fondo in sospeso!")
-        else:
-            st.info("Nessun dato disponibile o colonna 'Stato ordine' mancante nel file Excel.")
